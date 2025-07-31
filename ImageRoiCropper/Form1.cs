@@ -11,6 +11,7 @@ using System.Windows.Forms;
 using System.IO;
 
 using OpenCvSharp;
+using Microsoft.WindowsAPICodePack.Dialogs;
 
 namespace ImageRoiCropper
 {
@@ -31,7 +32,10 @@ namespace ImageRoiCropper
             LoadConfig();
         }
 
-        // 폴더 선택
+        // using Microsoft.WindowsAPICodePack.Dialogs; // 이 줄을 주석 처리 또는 삭제
+
+        // btnSelectFolder_Click, btnSelectSaveFolder_Click에서 CommonOpenFileDialog 사용 부분을 FolderBrowserDialog로 대체
+
         private void btnSelectFolder_Click(object sender, EventArgs e)
         {
             using (var dlg = new FolderBrowserDialog())
@@ -236,39 +240,21 @@ namespace ImageRoiCropper
             {
                 using (var src = Cv2.ImRead(imageFiles[i]))
                 {
-                    // === PictureBox ROI → 원본 변환 ===
-                    int imgW = src.Width, imgH = src.Height;
-                    int pbW = pictureBox.Width, pbH = pictureBox.Height;
-                    float imgAspect = (float)imgW / imgH;
-                    float boxAspect = (float)pbW / pbH;
-                    int drawW, drawH, offsetX, offsetY;
-                    if (imgAspect > boxAspect)
+                    // ROI 좌표 변환 (PictureBox → 원본)
+                    double xRatio = (double)src.Width / pictureBox.Width;
+                    double yRatio = (double)src.Height / pictureBox.Height;
+                    var roiCv = new OpenCvSharp.Rect(
+                        (int)(roiRect.X * xRatio),
+                        (int)(roiRect.Y * yRatio),
+                        Math.Min((int)(roiRect.Width * xRatio), src.Width - (int)(roiRect.X * xRatio)),
+                        Math.Min((int)(roiRect.Height * yRatio), src.Height - (int)(roiRect.Y * yRatio))
+                    );
+                    if (roiCv.Width <= 0 || roiCv.Height <= 0)
                     {
-                        drawW = pbW;
-                        drawH = (int)(pbW / imgAspect);
-                        offsetX = 0;
-                        offsetY = (pbH - drawH) / 2;
+                        lblStatus.Text = "ROI가 너무 작음";
+                        return;
                     }
-                    else
-                    {
-                        drawH = pbH;
-                        drawW = (int)(pbH * imgAspect);
-                        offsetX = (pbW - drawW) / 2;
-                        offsetY = 0;
-                    }
-                    int roiX_onImg = Math.Max(roiRect.X - offsetX, 0);
-                    int roiY_onImg = Math.Max(roiRect.Y - offsetY, 0);
-                    int roiW_onImg = Math.Min(roiRect.Width, drawW - roiX_onImg);
-                    int roiH_onImg = Math.Min(roiRect.Height, drawH - roiY_onImg);
-                    int x = (int)(roiX_onImg * (float)imgW / drawW);
-                    int y = (int)(roiY_onImg * (float)imgH / drawH);
-                    int w = (int)(roiW_onImg * (float)imgW / drawW);
-                    int h = (int)(roiH_onImg * (float)imgH / drawH);
-                    if (x < 0) x = 0;
-                    if (y < 0) y = 0;
-                    if (x + w > imgW) w = imgW - x;
-                    if (y + h > imgH) h = imgH - y;
-                    var roiCv = new OpenCvSharp.Rect(x, y, w, h);
+                    //roiCv = new OpenCvSharp.Rect(x, y, w, h);
 
                     if (roiCv.Width <= 0 || roiCv.Height <= 0) continue;
                     var cropped = new Mat(src, roiCv);
@@ -279,6 +265,8 @@ namespace ImageRoiCropper
                     Cv2.ImWrite(savePath, cropped, param ?? new int[0]);
                     savedCount++;
                 }
+
+                GC.Collect();
             }
             lblStatus.Text = $"일괄 저장 완료: {savedCount}개";
             MessageBox.Show($"일괄 저장 완료: {savedCount}개", "일괄 저장");
