@@ -12,6 +12,7 @@ using System.IO;
 
 using OpenCvSharp;
 using Microsoft.WindowsAPICodePack.Dialogs;
+using System.Threading;
 
 namespace ImageRoiCropper
 {
@@ -219,8 +220,8 @@ namespace ImageRoiCropper
             SaveConfig();
             base.OnFormClosing(e);
         }
-
-        private void btnBatchSave_Click(object sender, EventArgs e)
+        // ① 핸들러 시그니처를 async로 변경
+        private async void btnBatchSave_Click(object sender, EventArgs e)
         {
             if (imageFiles.Count == 0 || roiRect == Rectangle.Empty || string.IsNullOrWhiteSpace(txtSaveFolder.Text))
             {
@@ -228,6 +229,8 @@ namespace ImageRoiCropper
                 return;
             }
 
+            // ② UI 값/설정은 백그라운드 진입 전에 캡처
+            string saveFolder = txtSaveFolder.Text;
             string append = txtAppendName.Text;
             string format = cmbFormat.SelectedItem?.ToString() ?? "BMP";
             string ext = "." + format.ToLower();
@@ -235,42 +238,71 @@ namespace ImageRoiCropper
             if (format == "JPG") param = new[] { (int)OpenCvSharp.ImwriteFlags.JpegQuality, 95 };
             if (format == "PNG") param = new[] { (int)OpenCvSharp.ImwriteFlags.PngCompression, 3 };
 
+            // ③ 진행상태 보고용 Progress (UI 스레드에서 lblStatus 갱신)
+            var progress = new Progress<string>(msg => lblStatus.Text = msg);
+
+            btnBatchSave.Enabled = false; // 중복 클릭 방지
             int savedCount = 0;
-            for (int i = 0; i < imageFiles.Count; i++)
+
+            try
             {
-                using (var src = Cv2.ImRead(imageFiles[i]))
+                // ④ CPU 바운드 작업을 백그라운드에서 실행
+                savedCount = await Task.Run(() =>
                 {
-                    // ROI 좌표 변환 (PictureBox → 원본)
-                    double xRatio = (double)src.Width / pictureBox.Width;
-                    double yRatio = (double)src.Height / pictureBox.Height;
-                    var roiCv = new OpenCvSharp.Rect(
-                        (int)(roiRect.X * xRatio),
-                        (int)(roiRect.Y * yRatio),
-                        Math.Min((int)(roiRect.Width * xRatio), src.Width - (int)(roiRect.X * xRatio)),
-                        Math.Min((int)(roiRect.Height * yRatio), src.Height - (int)(roiRect.Y * yRatio))
-                    );
-                    if (roiCv.Width <= 0 || roiCv.Height <= 0)
+                    int localSaved = 0;
+
+                    for (int i = 0; i < imageFiles.Count; i++)
                     {
-                        lblStatus.Text = "ROI가 너무 작음";
-                        return;
+                        // === 기존 for 루프 본문 시작 ===
+                        using (var src = Cv2.ImRead(imageFiles[i]))
+                        {
+                            // ROI 좌표 변환 (PictureBox → 원본)
+                            double xRatio = (double)src.Width / pictureBox.Width;
+                            double yRatio = (double)src.Height / pictureBox.Height;
+                            var roiCv = new OpenCvSharp.Rect(
+                                (int)(roiRect.X * xRatio),
+                                (int)(roiRect.Y * yRatio),
+                                Math.Min((int)(roiRect.Width * xRatio), src.Width - (int)(roiRect.X * xRatio)),
+                                Math.Min((int)(roiRect.Height * yRatio), src.Height - (int)(roiRect.Y * yRatio))
+                            );
+
+                            if (roiCv.Width <= 0 || roiCv.Height <= 0)
+                            {
+                                // 진행 메시지 보고 후 다음 항목
+                                (progress as IProgress<string>)?.Report("ROI가 너무 작음");
+                                continue;
+                            }
+
+                            using (var cropped = new Mat(src, roiCv))
+                            {
+                                string fname = Path.GetFileNameWithoutExtension(imageFiles[i]) + append + ext;
+                                string savePath = Path.Combine(saveFolder, fname);
+                                Cv2.ImWrite(savePath, cropped, param ?? Array.Empty<int>());
+                                localSaved++;
+                            }
+                        }
+                        // UI 업데이트 빈도 조절
+                        Thread.Sleep(10);
+                        (progress as IProgress<string>)?.Report($"{i + 1}/{imageFiles.Count} 처리");
+                        // === 기존 for 루프 본문 끝 ===
                     }
-                    //roiCv = new OpenCvSharp.Rect(x, y, w, h);
 
-                    if (roiCv.Width <= 0 || roiCv.Height <= 0) continue;
-                    var cropped = new Mat(src, roiCv);
+                    return localSaved;
+                });
 
-                    string fname = Path.GetFileNameWithoutExtension(imageFiles[i]) + append + ext;
-                    string savePath = Path.Combine(txtSaveFolder.Text, fname);
-
-                    Cv2.ImWrite(savePath, cropped, param ?? new int[0]);
-                    savedCount++;
-                }
-
-                GC.Collect();
+                lblStatus.Text = $"일괄 저장 완료: {savedCount}개";
+                MessageBox.Show($"일괄 저장 완료: {savedCount}개", "일괄 저장");
             }
-            lblStatus.Text = $"일괄 저장 완료: {savedCount}개";
-            MessageBox.Show($"일괄 저장 완료: {savedCount}개", "일괄 저장");
+            catch (Exception ex)
+            {
+                lblStatus.Text = "오류: " + ex.Message;
+            }
+            finally
+            {
+                btnBatchSave.Enabled = true;
+            }
         }
+
 
     }
 }
